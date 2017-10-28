@@ -1,0 +1,59 @@
+set Schema 'DSE203Project';
+
+CREATE VIEW IS_SALES AS
+SELECT o.orderid,
+  o.orderdate,
+  o.customerid,
+  c.householdid,
+  c.gender,
+  o.city,
+  o.state,
+  o.zipcode,
+  ol.productid,
+  p.asin,
+  p.nodeid,
+  p.isinstock,
+  p.fullprice,
+  ol.unitprice,
+  ol.numunits,
+  ol.totalprice,
+  o.campaignid,
+  cp.channel campaignchannel,
+  cp.discount campaigndiscount,
+  cp.freeshppingflag campaignfreeshippingflag
+FROM orders o
+INNER JOIN orderlines ol
+ON o.orderid = ol.orderid
+INNER JOIN products p
+ON ol.productid = p.productid
+LEFT OUTER JOIN customers c
+ON o.customerid = c.customerid
+LEFT OUTER JOIN campaigns cp
+ON o.campaignid = cp.campaignid;
+
+CREATE VIEW IS_SALES_BY_MONTH AS
+SELECT s.nodeid,
+  c.month,
+  c.year,
+  SUM(s.numunits) total_sales_volume,
+  ROUND(AVG(CAST(s.numunits AS NUMERIC)),4) avg_sales_volume,
+  SUM(CAST(s.totalprice AS NUMERIC)) total_sales_price,
+  ROUND(AVG(CAST(s.totalprice AS NUMERIC)),2) avg_sales_price
+FROM IS_SALES s
+INNER JOIN calendar c
+ON s.orderdate = c.date
+INNER JOIN
+  (SELECT MAX(dom) tot_days_in_month,
+    MONTH,
+    YEAR
+  FROM calendar
+  GROUP BY MONTH,
+    YEAR
+  ) tdm
+ON tdm.month = c.month
+AND tdm.year = c.year
+GROUP BY s.nodeid,
+  c.MONTH,
+  c.YEAR;
+  
+  
