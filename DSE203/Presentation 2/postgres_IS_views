@@ -42,16 +42,6 @@ SELECT s.nodeid,
 FROM IS_SALES s
 INNER JOIN calendar c
 ON s.orderdate = c.date
-INNER JOIN
-  (SELECT MAX(dom) tot_days_in_month,
-    MONTH,
-    YEAR
-  FROM calendar
-  GROUP BY MONTH,
-    YEAR
-  ) tdm
-ON tdm.month = c.month
-AND tdm.year = c.year
 GROUP BY s.nodeid,
   c.MONTH,
   c.YEAR;
