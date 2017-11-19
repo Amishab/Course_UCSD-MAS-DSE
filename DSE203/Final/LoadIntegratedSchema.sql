@@ -89,24 +89,17 @@ GROUP BY s.nodeid,
 
 
  CREATE OR REPLACE VIEW reviewsaggregate AS
- SELECT 
-   r.asin,
-   COALESCE(s.nodeid,0) nodeid,
+SELECT r.asin,
+    COALESCE(p.nodeid::bigint, 0::bigint) AS nodeid,
     c.month,
     c.year,
     c.season,
     count(r.reviewid) AS numreviews,
-    avg(r.overall) AS avgrating
+    round(avg(r.overall), 2) AS avgrating
    FROM reviews r
-   left outer join sales s
-   on s.asin = r.asin
-   inner join calendar c
-   on c.date = r.reviewtime
-  GROUP BY r.asin,
-   COALESCE(s.nodeid,0),
-    c.month,
-    c.year,
-    c.season;
+     LEFT JOIN products p ON p.asin = r.asin
+     JOIN calendar c ON c.date = r.reviewtime
+  GROUP BY r.asin, COALESCE(p.nodeid::bigint, 0::bigint), c.month, c.year, c.season;
 
 CREATE OR REPLACE VIEW mlview AS
  SELECT COALESCE(curr.nodeid, prev.nodeid) AS nodeid,
@@ -132,8 +125,48 @@ CREATE OR REPLACE VIEW mlview AS
            FROM sales s
           WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= COALESCE(curr.l12myyyymm, prev.l12myyyymm) AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < COALESCE(curr.yyyymm, prev.nmyyyymm) AND s.nodeid = COALESCE(curr.nodeid, prev.nodeid)
           GROUP BY s.nodeid), 0::numeric) AS l12m_total_sales_price,
-    COALESCE(rev.numreviews::numeric, 0::numeric) AS numreviews_by_period,
-    COALESCE(rev.avgrating, 0::numeric) AS avgrating_by_period,
+    COALESCE(rev.numreviews::numeric, 0::numeric) AS pm_numreviews,
+    COALESCE(rev.avgrating, 0::numeric) AS pm_avgrating,
+    COALESCE(( SELECT 
+            count(r.reviewid) AS numreviews
+           FROM reviews r
+             LEFT JOIN products p ON p.asin = r.asin
+             JOIN calendar c ON c.date = r.reviewtime
+           WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint) 
+          AND  (c.year::text || lpad(c.month::text, 2, '0'::text))::integer >= COALESCE(curr.l3myyyymm, prev.l3myyyymm) 
+          AND (c.year::text || lpad(c.month::text, 2, '0'::text))::integer < COALESCE(curr.yyyymm, prev.nmyyyymm)
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)) 
+           ) , 0::numeric) AS l3m_numreviews,
+    COALESCE(( SELECT 
+            round(avg(r.overall), 2) AS avgrating
+           FROM reviews r
+             LEFT JOIN products p ON p.asin = r.asin
+             JOIN calendar c ON c.date = r.reviewtime
+           WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint) 
+          AND  (c.year::text || lpad(c.month::text, 2, '0'::text))::integer >= COALESCE(curr.l3myyyymm, prev.l3myyyymm) 
+          AND (c.year::text || lpad(c.month::text, 2, '0'::text))::integer < COALESCE(curr.yyyymm, prev.nmyyyymm)
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)) 
+           ), 0::numeric) AS l3m_avgrating,
+    COALESCE(( SELECT 
+            count(r.reviewid) AS numreviews
+           FROM reviews r
+             LEFT JOIN products p ON p.asin = r.asin
+             JOIN calendar c ON c.date = r.reviewtime
+           WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint) 
+          AND  (c.year::text || lpad(c.month::text, 2, '0'::text))::integer >= COALESCE(curr.l12myyyymm, prev.l12myyyymm) 
+          AND (c.year::text || lpad(c.month::text, 2, '0'::text))::integer < COALESCE(curr.yyyymm, prev.nmyyyymm)
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)) 
+           ) , 0::numeric) AS l12m_numreviews,
+    COALESCE(( SELECT 
+            round(avg(r.overall), 2) AS avgrating
+           FROM reviews r
+             LEFT JOIN products p ON p.asin = r.asin
+             JOIN calendar c ON c.date = r.reviewtime
+           WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint) 
+          AND  (c.year::text || lpad(c.month::text, 2, '0'::text))::integer >= COALESCE(curr.l12myyyymm, prev.l12myyyymm) 
+          AND (c.year::text || lpad(c.month::text, 2, '0'::text))::integer < COALESCE(curr.yyyymm, prev.nmyyyymm)
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)) 
+           ), 0::numeric) AS l12m_avgrating,
     COALESCE((( SELECT count(r.reviewid) AS numreviews
            FROM reviews r
              LEFT JOIN products p ON p.asin = r.asin
@@ -179,8 +212,11 @@ CREATE OR REPLACE VIEW mlview AS
            FROM reviews r
              LEFT JOIN products p ON p.asin = r.asin
              JOIN calendar c ON c.date = r.reviewtime
-          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)), c.month, c.year) rev ON COALESCE(curr.nodeid, prev.nodeid) = rev.nodeid AND COALESCE(curr.pm, prev.month::double precision) = rev.month::double precision AND COALESCE(curr.pmy, prev.year::double precision) = rev.year::double precision
-order by COALESCE(curr.nodeid, prev.nodeid) ,
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)), c.month, c.year) rev 
+          ON COALESCE(curr.nodeid, prev.nodeid) = rev.nodeid 
+          AND COALESCE(curr.pm, prev.month::double precision) = rev.month::double precision 
+          AND COALESCE(curr.pmy, prev.year::double precision) = rev.year::double precision
+ order by COALESCE(curr.nodeid, prev.nodeid) ,
     COALESCE(curr.year::double precision, prev.nmy) ,
     COALESCE(curr.month::double precision, prev.nm) 
 
@@ -280,3 +316,80 @@ CREATE INDEX idx_calendar_date
     (date ASC NULLS LAST)
     TABLESPACE pg_default;
 
+CREATE MATERIALIZED VIEW public.mv_mlview
+TABLESPACE pg_default
+AS
+ SELECT mlview.nodeid,
+    mlview.yr,
+    mlview.mon,
+    mlview.total_sales_volume,
+    mlview.total_sales_price,
+    mlview.pm_total_sales_volume,
+    mlview.pm_total_sales_price,
+    mlview.l3m_total_sales_volume,
+    mlview.l3m_total_sales_price,
+    mlview.l12m_total_sales_volume,
+    mlview.l12m_total_sales_price,
+    mlview.pm_numreviews,
+    mlview.pm_avgrating,
+    mlview.l3m_numreviews,
+    mlview.l3m_avgrating,
+    mlview.l12m_numreviews,
+    mlview.l12m_avgrating,
+    mlview.numreviews,
+    mlview.avgrating
+   FROM mlview
+WITH DATA;
+
+CREATE INDEX idx_mv_mlview_nodeid
+    ON public.mv_mlview USING btree
+    (nodeid ASC NULLS LAST)
+    TABLESPACE pg_default;
+
+
+CREATE MATERIALIZED VIEW mv_sales
+TABLESPACE pg_default
+AS
+ SELECT sales.orderid,
+    sales.orderdate,
+    sales.month,
+    sales.year,
+    sales.season,
+    sales.holidayseason,
+    sales.customerid,
+    sales.householdid,
+    sales.gender,
+    sales.city,
+    sales.state,
+    sales.zipcode,
+    sales.productid,
+    sales.asin,
+    sales.nodeid,
+    sales.isinstock,
+    sales.fullprice,
+    sales.unitprice,
+    sales.numunits,
+    sales.totalprice,
+    sales.campaignid,
+    sales.campaignchannel,
+    sales.campaigndiscount,
+    sales.campaignfreeshippingflag
+   FROM sales
+WITH DATA;
+
+CREATE INDEX idx_mv_sales_asin
+    ON mv_sales USING btree
+    (asin COLLATE pg_catalog."default")
+    TABLESPACE pg_default;
+CREATE INDEX idx_mv_sales_month_year
+    ON mv_sales USING btree
+    (month, year)
+    TABLESPACE pg_default;
+CREATE INDEX idx_mv_sales_nodeid
+    ON mv_sales USING btree
+    (nodeid)
+    TABLESPACE pg_default;
+CREATE INDEX idx_mv_sales_orderdate
+    ON mv_sales USING btree
+    (orderdate)
+    TABLESPACE pg_default;
