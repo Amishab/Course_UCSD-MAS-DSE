@@ -1,0 +1,116 @@
+{
+  "classification": {
+    "datalog": [
+      "nodeid",
+      "classification",
+      "level0",
+      "level1",
+      "level2",
+      "level3",
+      "level4",
+      "level5"
+    ],
+    "mapping": [
+      {
+        "table": "ClassificationInfo",
+        "source.datalog": [
+          "nodeid",
+          "classification",
+          "level0",
+          "level1",
+          "level2",
+          "level3",
+          "level4",
+          "level5"
+        ],
+        "source": "S1"
+      }
+    ]
+  },
+  "mlfeatures": {
+    "datalog": [
+      "nodeid",
+      "yr",
+      "mon",
+      "total_sales_volume",
+      "total_sales_price",
+      "pm_total_sales_volume",
+      "pm_total_sales_price",
+      "avgsntp"
+    ],
+    "mapping": [
+      {
+        "table": "mlfeatures",
+        "source.datalog": [
+          "nodeid",
+          "yr",
+          "mon",
+          "total_sales_volume",
+          "total_sales_price",
+          "pm_total_sales_volume",
+          "pm_total_sales_price"
+        ],
+        "key": "nodeid",
+        "source": "S1"
+      },
+      {
+        "__comment__": "not sure about this part and use of nodeid...",
+        "table": "sentiment",
+        "source.datalog": [
+          "yr",
+          "mon",
+          "nodeid",
+          "avgsntp"
+        ],
+        "key": "nodeid",
+        "source": "S2"
+      }
+    ]
+  },
+  "S2.ClassificationInfo": {
+    "table": "ClassificationInfo",
+    "datalogmap": [
+      "nodeid",
+      "classification",
+      "level0",
+      "level1",
+      "level2",
+      "level3",
+      "level4",
+      "level5"
+    ],
+    "columns": [
+      "nodeID",
+      "classification",
+      "category.level_0",
+      "category.nested.level_1",
+      "category.nested.nested.level_2",
+      "category.nested.nested.nested.level_3",
+      "category.nested.nested.nested.nested.level_4",
+      "category.nested.nested.nested.nested.nested.level_5"
+    ],
+    "keys": [
+      "nodeid",
+      "nodeID"
+    ],
+    "wrapper": "asterixWrapper"
+  },
+  "S2.sentiment": {
+    "table": "reviews",
+    "datalogmap": [
+      "nodeid",
+      "yr",
+      "mon",
+      "avgsntp"
+    ],
+    "columns": [
+      "asin",
+      "get_year(parse_date(r.reviewTime,\"M D, Y\")) as year",
+      "get_month(parse_date(r.reviewTime,\"M D, Y\")) as mon",
+      "get_day(parse_date(r.reviewTime,\"M D, Y\")) as day",
+      "parse_date(r.reviewTime,\"M D, Y\") as reviewTime"
+    ],
+    "function": "sentiment",
+    "wrapper": "asterixWrapper"
+  }
+}
