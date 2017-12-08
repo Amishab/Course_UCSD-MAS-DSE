@@ -1,16 +1,28 @@
 /*
 * Integrated schema design:
 *
-*  - Reviews table summarizes key information from product reviews JSON file
-*
-* - Classification flattens the nested structure of ClassificationInfo JSON file
-*
-* - Sales table integrates information from current customer database tables
+* - Sales view integrates information from current customer database tables
 *   products, orders, orderlines, customers, campaigns,  classificationInfo, season, holidayseason
 *
-* - DemandPredictions allows storage of demand prediction from machine learning
-*   team at classification level
+* - Salesaggregate view aggregates monthly sales by nodeid from Sales View
+*
+*- reviewsaggregate view summarizes key information from product reviews JSON file
+*
+* - reviews_agg_yrmn view to aggregate number of reviews and avgrating by nodeid
+*
+* - sales_agg_mn view aggregates and ranks sales by nodeid and month
+*
+* - sales_agg_yr view aggregates and ranks sales by nodeid and year
+*
+* - sales_agg_yrmn view aggregates and ranks sales by nodeid, year and month
+*
+* - ml_features view provides all features needed for Machine Learning to predict the demand
+*
+* - mv_ml_features view is materilized view based on ml_features view
+* 
 */
+
+--Add season info to Calendar
 ALTER TABLE calendar ADD column season        VARCHAR(10) NULL;
 
 ALTER TABLE calendar ADD column holidayseason VARCHAR(25) NULL;
@@ -34,61 +46,54 @@ SET season =
     ELSE NULL
   END;
 
-CREATE VIEW Sales AS
-SELECT o.orderid,
-  o.orderdate,
-  cl.month,
-  cl.year,
-  cl.season,
-  cl.holidayseason,
-  o.customerid,
-  c.householdid,
-  c.gender,
-  o.city,
-  o.state,
-  o.zipcode,
-  ol.productid,
-  p.asin,
-  cast(p.nodeid as bigint) nodeid,
-  p.isinstock,
-  p.fullprice,
-  ol.unitprice,
-  ol.numunits,
-  ol.totalprice,
-  o.campaignid,
-  cp.channel campaignchannel,
-  cp.discount campaigndiscount,
-  cp.freeshppingflag campaignfreeshippingflag
-FROM orders o
-INNER JOIN orderlines ol
-ON o.orderid = ol.orderid
-INNER JOIN products p
-ON ol.productid = p.productid
-LEFT OUTER JOIN customers c
-ON o.customerid = c.customerid
-LEFT OUTER JOIN campaigns cp
-ON o.campaignid = cp.campaignid
-INNER JOIN calendar cl
-ON o.orderdate = cl.date;
+--Sales View
+CREATE OR REPLACE VIEW public.sales AS
+ SELECT o.orderid,
+    o.orderdate,
+    cl.month,
+    cl.year,
+    cl.season,
+    cl.holidayseason,
+    o.customerid,
+    c.householdid,
+    c.gender,
+    o.city,
+    o.state,
+    o.zipcode,
+    ol.productid,
+    p.asin,
+    p.nodeid::bigint AS nodeid,
+    p.isinstock,
+    p.fullprice,
+    ol.unitprice,
+    ol.numunits,
+    ol.totalprice,
+    o.campaignid,
+    cp.channel AS campaignchannel,
+    cp.discount AS campaigndiscount,
+    cp.freeshppingflag AS campaignfreeshippingflag
+   FROM orders o
+     JOIN orderlines ol ON o.orderid = ol.orderid
+     JOIN products p ON ol.productid = p.productid
+     LEFT JOIN customers c ON o.customerid = c.customerid
+     LEFT JOIN campaigns cp ON o.campaignid = cp.campaignid
+     JOIN calendar cl ON o.orderdate = cl.date;
 
---drop view SalesAggregate;
-CREATE VIEW SalesAggregate AS
-SELECT s.nodeid,
-  s.month,
-  s.year,
-  s.season,
-  SUM(s.numunits) total_sales_volume,
-  ROUND(AVG(CAST(s.numunits AS NUMERIC)),4) avg_sales_volume,
-  SUM(CAST(s.totalprice AS NUMERIC)) total_sales_price,
-  ROUND(AVG(CAST(s.totalprice AS NUMERIC)),2) avg_sales_price
-FROM Sales s
-GROUP BY s.nodeid,
-  s.MONTH,
-  s.YEAR,
-  s.season;
+-- SalesAggregate view
+CREATE OR REPLACE VIEW public.salesaggregate AS
+ SELECT s.nodeid,
+    s.month,
+    s.year,
+    s.season,
+    sum(s.numunits) AS total_sales_volume,
+    round(avg(s.numunits::numeric), 4) AS avg_sales_volume,
+    sum(s.totalprice::numeric) AS total_sales_price,
+    round(avg(s.totalprice::numeric), 2) AS avg_sales_price
+   FROM sales s
+  GROUP BY s.nodeid, s.month, s.year, s.season;
 
-
- CREATE OR REPLACE VIEW reviewsaggregate AS
+-- reviewsaggregate view
+CREATE OR REPLACE VIEW reviewsaggregate AS
 SELECT r.asin,
     COALESCE(p.nodeid::bigint, 0::bigint) AS nodeid,
     c.month,
@@ -101,109 +106,135 @@ SELECT r.asin,
      JOIN calendar c ON c.date = r.reviewtime
   GROUP BY r.asin, COALESCE(p.nodeid::bigint, 0::bigint), c.month, c.year, c.season;
 
-CREATE OR REPLACE VIEW mlview AS
- SELECT COALESCE(curr.nodeid, prev.nodeid) AS nodeid,
-    COALESCE(curr.year::double precision, prev.nmy) AS yr,
-    COALESCE(curr.month::double precision, prev.nm) AS mon,
-    COALESCE(curr.total_sales_volume, 0::bigint) AS total_sales_volume,
-    COALESCE(curr.total_sales_price, 0::numeric) AS total_sales_price,
-    COALESCE(prev.total_sales_volume, 0::bigint) AS pm_total_sales_volume,
-    COALESCE(prev.total_sales_price, 0::numeric) AS pm_total_sales_price,
-    COALESCE(( SELECT sum(s.numunits) AS total_sales_volume
-           FROM sales s
-          WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= COALESCE(curr.l3myyyymm, prev.l3myyyymm) AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < COALESCE(curr.yyyymm, prev.nmyyyymm) AND s.nodeid = COALESCE(curr.nodeid, prev.nodeid)
-          GROUP BY s.nodeid), 0::bigint) AS l3m_total_sales_volume,
-    COALESCE(( SELECT sum(s.totalprice::numeric) AS total_sales_price
-           FROM sales s
-          WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= COALESCE(curr.l3myyyymm, prev.l3myyyymm) AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < COALESCE(curr.yyyymm, prev.nmyyyymm) AND s.nodeid = COALESCE(curr.nodeid, prev.nodeid)
-          GROUP BY s.nodeid), 0::numeric) AS l3m_total_sales_price,
-    COALESCE(( SELECT sum(s.numunits) AS total_sales_volume
-           FROM sales s
-          WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= COALESCE(curr.l12myyyymm, prev.l12myyyymm) AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < COALESCE(curr.yyyymm, prev.nmyyyymm) AND s.nodeid = COALESCE(curr.nodeid, prev.nodeid)
-          GROUP BY s.nodeid), 0::bigint) AS l12m_total_sales_volume,
-    COALESCE(( SELECT sum(s.totalprice::numeric) AS total_sales_price
-           FROM sales s
-          WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= COALESCE(curr.l12myyyymm, prev.l12myyyymm) AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < COALESCE(curr.yyyymm, prev.nmyyyymm) AND s.nodeid = COALESCE(curr.nodeid, prev.nodeid)
-          GROUP BY s.nodeid), 0::numeric) AS l12m_total_sales_price,
+-- View: public.reviews_agg_yrmn
+
+CREATE OR REPLACE VIEW public.reviews_agg_yrmn AS
+ SELECT p.nodeid::bigint AS nodeid,
+    c.year AS yr,
+    c.month AS mn,
+    count(r.reviewid) AS numreviews,
+    round(avg(r.overall), 2) AS avgrating
+   FROM reviews r
+     LEFT JOIN products p ON p.asin = r.asin
+     JOIN calendar c ON c.date = r.reviewtime
+  GROUP BY (p.nodeid::bigint), c.year, c.month;
+
+-- View: public.sales_agg_mn
+
+CREATE OR REPLACE VIEW public.sales_agg_mn AS
+ SELECT s.nodeid,
+    s.month AS mn,
+    sum(s.totalprice::numeric) AS sales,
+    sum(s.numunits) AS vol,
+    round(avg(s.totalprice::numeric), 2) AS avgprice,
+    dense_rank() OVER (PARTITION BY s.month ORDER BY (sum(s.totalprice::numeric)) DESC) AS rank_sales,
+    dense_rank() OVER (PARTITION BY s.month ORDER BY (sum(s.numunits)) DESC) AS rank_vol
+   FROM sales s
+  GROUP BY s.nodeid, s.month;
+
+-- View: public.sales_agg_yr
+
+CREATE OR REPLACE VIEW public.sales_agg_yr AS
+ SELECT s.nodeid,
+    s.year AS yr,
+    sum(s.totalprice::numeric) AS sales,
+    sum(s.numunits) AS vol,
+    round(avg(s.totalprice::numeric), 2) AS avgprice,
+    dense_rank() OVER (PARTITION BY s.year ORDER BY (sum(s.totalprice::numeric)) DESC) AS rank_sales,
+    dense_rank() OVER (PARTITION BY s.year ORDER BY (sum(s.numunits)) DESC) AS rank_vol
+   FROM sales s
+  GROUP BY s.nodeid, s.year;
+
+-- View: public.sales_agg_yrmn
+
+CREATE OR REPLACE VIEW public.sales_agg_yrmn AS
+ SELECT s.nodeid,
+    s.year AS yr,
+    s.month AS mn,
+    sum(s.totalprice::numeric) AS sales,
+    sum(s.numunits) AS vol,
+    round(avg(s.totalprice::numeric), 2) AS avgprice
+   FROM sales s
+  GROUP BY s.nodeid, s.year, s.month;
+
+-- View: public.ml_features
+
+CREATE OR REPLACE VIEW public.ml_features AS
+ SELECT baseline.nodeid,
+    baseline.year AS yr,
+    baseline.month AS mn,
+    COALESCE(curr.total_sales_price, 0::numeric) AS sales,
+    COALESCE(curr.total_sales_volume, 0::bigint) AS vol,
+    COALESCE(prev.total_sales_price, 0::numeric) AS pm_sales,
+    COALESCE(prev.total_sales_volume, 0::bigint) AS pm_vol,
+    COALESCE(( SELECT sum(s.total_sales_price) AS total_sales_price
+           FROM salesaggregate s
+          WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= baseline.p3myyyymm AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < baseline.yyyymm AND s.nodeid = baseline.nodeid
+          GROUP BY s.nodeid), 0::numeric) AS p3m_sales,
+    COALESCE(( SELECT sum(s.total_sales_volume) AS total_sales_volume
+           FROM salesaggregate s
+          WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= baseline.p3myyyymm AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < baseline.yyyymm AND s.nodeid = baseline.nodeid
+          GROUP BY s.nodeid), 0::bigint::numeric) AS p3m_vol,
+    COALESCE(( SELECT sum(s.total_sales_price) AS total_sales_price
+           FROM salesaggregate s
+          WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= baseline.p12myyyymm AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < baseline.yyyymm AND s.nodeid = baseline.nodeid
+          GROUP BY s.nodeid), 0::numeric) AS p12m_sales,
+    COALESCE(( SELECT sum(s.total_sales_volume) AS total_sales_volume
+           FROM salesaggregate s
+          WHERE ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) >= baseline.p12myyyymm AND ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer) < baseline.yyyymm AND s.nodeid = baseline.nodeid
+          GROUP BY s.nodeid), 0::bigint::numeric) AS p12m_vol,
     COALESCE(rev.numreviews::numeric, 0::numeric) AS pm_numreviews,
     COALESCE(rev.avgrating, 0::numeric) AS pm_avgrating,
-    COALESCE(( SELECT 
-            count(r.reviewid) AS numreviews
-           FROM reviews r
-             LEFT JOIN products p ON p.asin = r.asin
-             JOIN calendar c ON c.date = r.reviewtime
-           WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint) 
-          AND  (c.year::text || lpad(c.month::text, 2, '0'::text))::integer >= COALESCE(curr.l3myyyymm, prev.l3myyyymm) 
-          AND (c.year::text || lpad(c.month::text, 2, '0'::text))::integer < COALESCE(curr.yyyymm, prev.nmyyyymm)
-          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)) 
-           ) , 0::numeric) AS l3m_numreviews,
-    COALESCE(( SELECT 
-            round(avg(r.overall), 2) AS avgrating
-           FROM reviews r
-             LEFT JOIN products p ON p.asin = r.asin
-             JOIN calendar c ON c.date = r.reviewtime
-           WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint) 
-          AND  (c.year::text || lpad(c.month::text, 2, '0'::text))::integer >= COALESCE(curr.l3myyyymm, prev.l3myyyymm) 
-          AND (c.year::text || lpad(c.month::text, 2, '0'::text))::integer < COALESCE(curr.yyyymm, prev.nmyyyymm)
-          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)) 
-           ), 0::numeric) AS l3m_avgrating,
-    COALESCE(( SELECT 
-            count(r.reviewid) AS numreviews
-           FROM reviews r
-             LEFT JOIN products p ON p.asin = r.asin
-             JOIN calendar c ON c.date = r.reviewtime
-           WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint) 
-          AND  (c.year::text || lpad(c.month::text, 2, '0'::text))::integer >= COALESCE(curr.l12myyyymm, prev.l12myyyymm) 
-          AND (c.year::text || lpad(c.month::text, 2, '0'::text))::integer < COALESCE(curr.yyyymm, prev.nmyyyymm)
-          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)) 
-           ) , 0::numeric) AS l12m_numreviews,
-    COALESCE(( SELECT 
-            round(avg(r.overall), 2) AS avgrating
-           FROM reviews r
-             LEFT JOIN products p ON p.asin = r.asin
-             JOIN calendar c ON c.date = r.reviewtime
-           WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint) 
-          AND  (c.year::text || lpad(c.month::text, 2, '0'::text))::integer >= COALESCE(curr.l12myyyymm, prev.l12myyyymm) 
-          AND (c.year::text || lpad(c.month::text, 2, '0'::text))::integer < COALESCE(curr.yyyymm, prev.nmyyyymm)
-          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)) 
-           ), 0::numeric) AS l12m_avgrating,
     COALESCE((( SELECT count(r.reviewid) AS numreviews
            FROM reviews r
-             LEFT JOIN products p ON p.asin = r.asin
-          WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint)
-          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint))))::numeric, 0::numeric) AS numreviews,
+             JOIN products p ON p.asin = r.asin
+             JOIN calendar c ON c.date = r.reviewtime
+          WHERE baseline.nodeid = COALESCE(p.nodeid::bigint, 0::bigint) AND ((c.year::text || lpad(c.month::text, 2, '0'::text))::integer) >= baseline.p3myyyymm AND ((c.year::text || lpad(c.month::text, 2, '0'::text))::integer) < baseline.yyyymm
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint))))::numeric, 0::numeric) AS p3m_numreviews,
     COALESCE(( SELECT round(avg(r.overall), 2) AS avgrating
            FROM reviews r
-             LEFT JOIN products p ON p.asin = r.asin
-          WHERE COALESCE(curr.nodeid, prev.nodeid) = COALESCE(p.nodeid::bigint, 0::bigint)
-          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint))), 0::numeric) AS avgrating
-   FROM ( SELECT s.nodeid,
+             JOIN products p ON p.asin = r.asin
+             JOIN calendar c ON c.date = r.reviewtime
+          WHERE baseline.nodeid = COALESCE(p.nodeid::bigint, 0::bigint) AND ((c.year::text || lpad(c.month::text, 2, '0'::text))::integer) >= baseline.p3myyyymm AND ((c.year::text || lpad(c.month::text, 2, '0'::text))::integer) < baseline.yyyymm
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint))), 0::numeric) AS p3m_avgrating,
+    COALESCE((( SELECT count(r.reviewid) AS numreviews
+           FROM reviews r
+             JOIN products p ON p.asin = r.asin
+             JOIN calendar c ON c.date = r.reviewtime
+          WHERE baseline.nodeid = COALESCE(p.nodeid::bigint, 0::bigint) AND ((c.year::text || lpad(c.month::text, 2, '0'::text))::integer) >= baseline.p12myyyymm AND ((c.year::text || lpad(c.month::text, 2, '0'::text))::integer) < baseline.yyyymm
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint))))::numeric, 0::numeric) AS p12m_numreviews,
+    COALESCE(( SELECT round(avg(r.overall), 2) AS avgrating
+           FROM reviews r
+             JOIN products p ON p.asin = r.asin
+             JOIN calendar c ON c.date = r.reviewtime
+          WHERE baseline.nodeid = COALESCE(p.nodeid::bigint, 0::bigint) AND ((c.year::text || lpad(c.month::text, 2, '0'::text))::integer) >= baseline.p12myyyymm AND ((c.year::text || lpad(c.month::text, 2, '0'::text))::integer) < baseline.yyyymm
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint))), 0::numeric) AS p12m_avgrating
+   FROM ( SELECT DISTINCT products.nodeid::bigint AS nodeid,
+            calendar.year,
+            calendar.month,
+            calendar.monthabbr,
+            (calendar.year::text || lpad(calendar.month::text, 2, '0'::text))::integer AS yyyymm,
+            calendar.season,
+            calendar.holidayseason,
+            date_part('month'::text, (date_trunc('month'::text, calendar.date::timestamp with time zone) - '1 mon'::interval)::date) AS pm,
+            date_part('year'::text, (date_trunc('month'::text, calendar.date::timestamp with time zone) - '1 mon'::interval)::date) AS pmy,
+            (date_part('year'::text, date_trunc('month'::text, calendar.date::timestamp with time zone) - '3 mons'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, calendar.date::timestamp with time zone) - '3 mons'::interval)::text, 2, '0'::text))::integer AS p3myyyymm,
+            (date_part('year'::text, date_trunc('month'::text, calendar.date::timestamp with time zone) - '1 year'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, calendar.date::timestamp with time zone) - '1 year'::interval)::text, 2, '0'::text))::integer AS p12myyyymm
+           FROM products
+             CROSS JOIN calendar
+          WHERE calendar.year >= 2009 AND calendar.year <= 2016) baseline
+     LEFT JOIN ( SELECT s.nodeid,
             s.month,
             s.year,
-            (s.year::text || lpad(s.month::text, 2, '0'::text))::integer AS yyyymm,
-            s.season,
-            s.holidayseason,
-            date_part('month'::text, (date_trunc('month'::text, s.orderdate::timestamp with time zone) - '1 mon'::interval)::date) AS pm,
-            date_part('year'::text, (date_trunc('month'::text, s.orderdate::timestamp with time zone) - '1 mon'::interval)::date) AS pmy,
-            (date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '3 mons'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '3 mons'::interval)::text, 2, '0'::text))::integer AS l3myyyymm,
-            (date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '1 year'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '1 year'::interval)::text, 2, '0'::text))::integer AS l12myyyymm,
-            sum(s.fullprice * s.numunits) AS total_full_price,
-            sum(s.numunits) AS total_sales_volume,
-            sum(s.totalprice::numeric) AS total_sales_price
-           FROM sales s
-          GROUP BY s.nodeid, s.month, s.year, ((s.year::text || lpad(s.month::text, 2, '0'::text))::integer), s.season, s.holidayseason, (date_part('month'::text, (date_trunc('month'::text, s.orderdate::timestamp with time zone) - '1 mon'::interval)::date)), (date_part('year'::text, (date_trunc('month'::text, s.orderdate::timestamp with time zone) - '1 mon'::interval)::date)), ((date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '3 mons'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '3 mons'::interval)::text, 2, '0'::text))::integer), ((date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '1 year'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '1 year'::interval)::text, 2, '0'::text))::integer)) curr
-     FULL JOIN ( SELECT s.nodeid,
+            s.total_sales_volume,
+            s.total_sales_price
+           FROM salesaggregate s) curr ON baseline.nodeid = curr.nodeid AND baseline.month = curr.month AND baseline.year = curr.year
+     LEFT JOIN ( SELECT s.nodeid,
             s.month,
             s.year,
-            date_part('month'::text, (date_trunc('month'::text, s.orderdate::timestamp with time zone) + '1 mon'::interval)::date) AS nm,
-            date_part('year'::text, (date_trunc('month'::text, s.orderdate::timestamp with time zone) + '1 mon'::interval)::date) AS nmy,
-            (date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) + '1 mon'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) + '1 mon'::interval)::text, 2, '0'::text))::integer AS nmyyyymm,
-            (date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '2 mons'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '2 mons'::interval)::text, 2, '0'::text))::integer AS l3myyyymm,
-            (date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '11 mons'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '11 mons'::interval)::text, 2, '0'::text))::integer AS l12myyyymm,
-            sum(s.numunits) AS total_sales_volume,
-            sum(s.totalprice::numeric) AS total_sales_price
-           FROM sales s
-          GROUP BY s.nodeid, s.month, s.year, (date_part('month'::text, (date_trunc('month'::text, s.orderdate::timestamp with time zone) + '1 mon'::interval)::date)), (date_part('year'::text, (date_trunc('month'::text, s.orderdate::timestamp with time zone) + '1 mon'::interval)::date)), ((date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) + '1 mon'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) + '1 mon'::interval)::text, 2, '0'::text))::integer), ((date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '2 mons'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '2 mons'::interval)::text, 2, '0'::text))::integer), ((date_part('year'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '11 mons'::interval)::text || lpad(date_part('month'::text, date_trunc('month'::text, s.orderdate::timestamp with time zone) - '11 mons'::interval)::text, 2, '0'::text))::integer)) prev ON curr.nodeid = prev.nodeid AND curr.pm = prev.month::double precision AND curr.pmy = prev.year::double precision
+            s.total_sales_volume,
+            s.total_sales_price
+           FROM salesaggregate s) prev ON baseline.nodeid = prev.nodeid AND baseline.pm = prev.month::double precision AND baseline.pmy = prev.year::double precision
      LEFT JOIN ( SELECT COALESCE(p.nodeid::bigint, 0::bigint) AS nodeid,
             c.month,
             c.year,
@@ -212,184 +243,135 @@ CREATE OR REPLACE VIEW mlview AS
            FROM reviews r
              LEFT JOIN products p ON p.asin = r.asin
              JOIN calendar c ON c.date = r.reviewtime
-          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)), c.month, c.year) rev 
-          ON COALESCE(curr.nodeid, prev.nodeid) = rev.nodeid 
-          AND COALESCE(curr.pm, prev.month::double precision) = rev.month::double precision 
-          AND COALESCE(curr.pmy, prev.year::double precision) = rev.year::double precision
- order by COALESCE(curr.nodeid, prev.nodeid) ,
-    COALESCE(curr.year::double precision, prev.nmy) ,
-    COALESCE(curr.month::double precision, prev.nm) 
+          GROUP BY (COALESCE(p.nodeid::bigint, 0::bigint)), c.month, c.year) rev ON baseline.nodeid = rev.nodeid AND baseline.pm = rev.month::double precision AND baseline.pmy = rev.year::double precision
+  ORDER BY baseline.nodeid, baseline.year, baseline.month;
 
-CREATE TABLE Classification
-  (
-    NodeId         BIGINT NOT NULL,
-    Classification VARCHAR(100) NOT NULL,
-    Level0         VARCHAR(100),
-    Level1         VARCHAR(100),
-    Level2         VARCHAR(100),
-    Level3         VARCHAR(100),
-    Level4         VARCHAR(100),
-    Level5         VARCHAR(100)
-  );
+  -- View: public.mv_ml_features
 
-
-CREATE TABLE DemandPredictions
-  (
-    demandid       INTEGER PRIMARY KEY,
-    nodeid         INTEGER,
-    MONTH          INTEGER,
-    YEAR           INTEGER,
-    season         VARCHAR(10),
-    predictedsales INTEGER
-  );
-
-
-ALTER TABLE orderlines
-    ADD CONSTRAINT "Orders_FK" FOREIGN KEY (orderid)
-    REFERENCES orders (orderid) MATCH SIMPLE
-    ON UPDATE NO ACTION
-    ON DELETE NO ACTION;
-CREATE INDEX "fki_Orders_FK"
-    ON orderlines(orderid);
-
-ALTER TABLE orderlines
-    ADD CONSTRAINT product_fk FOREIGN KEY (productid)
-    REFERENCES products (productid) MATCH SIMPLE
-    ON UPDATE NO ACTION
-    ON DELETE NO ACTION;
-CREATE INDEX fki_product_fk
-    ON orderlines(productid);
+CREATE MATERIALIZED VIEW public.mv_ml_features
+TABLESPACE pg_default
+AS
+ SELECT ml_features.nodeid,
+    ml_features.yr,
+    ml_features.mn,
+    ml_features.sales,
+    ml_features.vol,
+    ml_features.pm_sales,
+    ml_features.pm_vol,
+    ml_features.p3m_sales,
+    ml_features.p3m_vol,
+    ml_features.p12m_sales,
+    ml_features.p12m_vol,
+    ml_features.pm_numreviews,
+    ml_features.pm_avgrating,
+    ml_features.p3m_numreviews,
+    ml_features.p3m_avgrating,
+    ml_features.p12m_numreviews,
+    ml_features.p12m_avgrating
+   FROM ml_features
+WITH DATA;
 
 --Adding zero id record in Customers to get all customers
 insert into customers(customerid, householdid, gender, firstname)
 values (0, 0,'NOT DEFINED', 'NOT DEFINED');
 
-ALTER TABLE orders
-    ADD CONSTRAINT customer_fk FOREIGN KEY (customerid)
-    REFERENCES customers (customerid) MATCH SIMPLE
-    ON UPDATE NO ACTION
-    ON DELETE NO ACTION;
-CREATE INDEX fki_customer_fk
-    ON orders(customerid);
-
-ALTER TABLE orders
+-- Add Foreign keys
+ALTER TABLE public.orders
     ADD CONSTRAINT campaign_fk FOREIGN KEY (campaignid)
-    REFERENCES campaigns (campaignid) MATCH SIMPLE
-    ON UPDATE NO ACTION
-    ON DELETE NO ACTION;
-CREATE INDEX fki_campaign_fk
-    ON orders(campaignid);
+    REFERENCES public.campaigns (campaignid);
 
---DROP INDEX idx_reviews_asin;
-CREATE INDEX idx_reviews_asin
-    ON reviews USING btree
+ALTER TABLE public.orders
+    ADD CONSTRAINT customer_fk FOREIGN KEY (customerid)
+    REFERENCES public.customers (customerid);
+
+ALTER TABLE public.orderlines
+    ADD CONSTRAINT orders_fk FOREIGN KEY (orderid)
+    REFERENCES public.orders (orderid);
+
+ALTER TABLE public.orderlines
+    ADD CONSTRAINT product_fk FOREIGN KEY (productid)
+    REFERENCES public.products (productid);
+
+
+
+
+
+--Add Indexes
+
+CREATE INDEX idx_calendar_date
+    ON public.calendar USING btree
+    (date)
+    TABLESPACE pg_default;
+
+CREATE INDEX idx_calendar_year
+    ON public.calendar USING btree
+    (year)
+    TABLESPACE pg_default;
+
+CREATE INDEX pkcampaign
+    ON public.campaigns USING btree
+    (campaignid)
+    TABLESPACE pg_default;
+
+CREATE INDEX pkcustomerid
+    ON public.customers USING btree
+    (customerid)
+    TABLESPACE pg_default;
+
+CREATE INDEX fki_orders_fk
+    ON public.orderlines USING btree
+    (orderid)
+    TABLESPACE pg_default;
+
+CREATE INDEX fki_product_fk
+    ON public.orderlines USING btree
+    (productid)
+    TABLESPACE pg_default;
+
+CREATE INDEX fki_campaign_fk
+    ON public.orders USING btree
+    (campaignid)
+    TABLESPACE pg_default;
+
+CREATE INDEX fki_customer_fk
+    ON public.orders USING btree
+    (customerid)
+    TABLESPACE pg_default;
+
+CREATE INDEX idx_orders_orddt
+    ON public.orders USING hash
+    (orderdate)
+    TABLESPACE pg_default;
+
+CREATE INDEX pkorderid
+    ON public.orders USING btree
+    (orderid)
+    TABLESPACE pg_default;
+
+CREATE INDEX idx_products_asin
+    ON public.products USING hash
     (asin COLLATE pg_catalog."default")
     TABLESPACE pg_default;
 
---DROP INDEX idx_reviews_rvwtime;
+CREATE INDEX idx_products_nodeid
+    ON public.products USING btree
+    ((nodeid::bigint))
+    TABLESPACE pg_default;
+
+CREATE INDEX pkproduct
+    ON public.products USING btree
+    (productid)
+    TABLESPACE pg_default;
+
+CREATE INDEX idx_reviews_asin
+    ON public.reviews USING btree
+    (asin COLLATE pg_catalog."default")
+    TABLESPACE pg_default;
+
 CREATE INDEX idx_reviews_rvwtime
-    ON reviews USING btree
+    ON public.reviews USING hash
     (reviewtime)
     TABLESPACE pg_default;
 
---DROP INDEX idx_orders_orddt;
-CREATE INDEX idx_orders_orddt
-    ON orders USING btree
-    (orderdate)
-    TABLESPACE pg_default;
-    
---DROP INDEX idx_products_asin;
-	CREATE INDEX idx_products_asin
-    ON products USING btree
-    (asin)
-    TABLESPACE pg_default;
-    
---DROP INDEX idx_products_nodeid;
-CREATE INDEX idx_products_nodeid
-    ON products USING btree
-    (cast(nodeid as bigint) ASC NULLS LAST)
-    TABLESPACE pg_default;
-
---dROP index idx_calendar_date;
-CREATE INDEX idx_calendar_date
-    ON calendar USING btree
-    (date ASC NULLS LAST)
-    TABLESPACE pg_default;
-
-CREATE MATERIALIZED VIEW public.mv_mlview
-TABLESPACE pg_default
-AS
- SELECT mlview.nodeid,
-    mlview.yr,
-    mlview.mon,
-    mlview.total_sales_volume,
-    mlview.total_sales_price,
-    mlview.pm_total_sales_volume,
-    mlview.pm_total_sales_price,
-    mlview.l3m_total_sales_volume,
-    mlview.l3m_total_sales_price,
-    mlview.l12m_total_sales_volume,
-    mlview.l12m_total_sales_price,
-    mlview.pm_numreviews,
-    mlview.pm_avgrating,
-    mlview.l3m_numreviews,
-    mlview.l3m_avgrating,
-    mlview.l12m_numreviews,
-    mlview.l12m_avgrating,
-    mlview.numreviews,
-    mlview.avgrating
-   FROM mlview
-WITH DATA;
-
-CREATE INDEX idx_mv_mlview_nodeid
-    ON public.mv_mlview USING btree
-    (nodeid ASC NULLS LAST)
-    TABLESPACE pg_default;
 
 
-CREATE MATERIALIZED VIEW mv_sales
-TABLESPACE pg_default
-AS
- SELECT sales.orderid,
-    sales.orderdate,
-    sales.month,
-    sales.year,
-    sales.season,
-    sales.holidayseason,
-    sales.customerid,
-    sales.householdid,
-    sales.gender,
-    sales.city,
-    sales.state,
-    sales.zipcode,
-    sales.productid,
-    sales.asin,
-    sales.nodeid,
-    sales.isinstock,
-    sales.fullprice,
-    sales.unitprice,
-    sales.numunits,
-    sales.totalprice,
-    sales.campaignid,
-    sales.campaignchannel,
-    sales.campaigndiscount,
-    sales.campaignfreeshippingflag
-   FROM sales
-WITH DATA;
-
-CREATE INDEX idx_mv_sales_asin
-    ON mv_sales USING btree
-    (asin COLLATE pg_catalog."default")
-    TABLESPACE pg_default;
-CREATE INDEX idx_mv_sales_month_year
-    ON mv_sales USING btree
-    (month, year)
-    TABLESPACE pg_default;
-CREATE INDEX idx_mv_sales_nodeid
-    ON mv_sales USING btree
-    (nodeid)
-    TABLESPACE pg_default;
-CREATE INDEX idx_mv_sales_orderdate
-    ON mv_sales USING btree
-    (orderdate)
-    TABLESPACE pg_default;
