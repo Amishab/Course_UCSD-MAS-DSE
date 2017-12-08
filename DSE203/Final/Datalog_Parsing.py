@@ -1,15 +1,11 @@
-
 # coding: utf-8
 
 # # Datalog Parsing Notebook
-
-# In[1]:
 
 import pandas as pd
 import psycopg2 as pg
 import types
 import re
-
 
 # Package versions:
 # - python 2.7
@@ -31,112 +27,16 @@ import re
 # 3. Parser assumes multi-step datalog strings are separated by a period
 # 4. Special treatment of conditions of form "attribute in (a,b,c,d)" had to be taken in cleanDatalog, getBody, and getConds functions - "attribute in (a,b,c,d)" was converted to "attribute%in%(a,b,c,d)"
 
-# #### Test datalog queries
-
-# In[2]:
-
-# ML query -> Get training data for a group of nodeIds (group indicates a super category)
-ml_train_query = (
-'''Ans (nodeId, yr, mn, sales, vol, pm_sales, pm_vol, p3m_sales, p3m_vol, p12m_sales, p12m_vol, 
-            pm_numreviews, pm_avgrating, p3m_numreviews, p3m_avgrating, p12m_numreviews, 
-            p12m_avgrating, pm_avgsntp, p3m_avgsntp, p12m_avgsntp ) :-
-        mlfeatures ( nodeId, yr, mn, sales, vol, pm_sales, pm_vol, p3m_sales, p3m_vol, 
-             p12m_sales, p12m_vol, pm_numreviews, pm_avgrating, p3m_numreviews, 
-             p3m_avgrating, p12m_numreviews, p12m_avgrating, pm_avgsntp, p3m_avgsntp, p12m_avgsntp ) , 
-        nodeId in (15, 45, 121).'''
-)
-
-# ML query -> Get features for moth of Dec to predict sale on month of Dec for a super category
-ml_predict_query = (
-'''Ans (nodeId, yr, mn, sales, vol, pm_sales, pm_vol, p3m_sales, p3m_vol, 
-            p12m_sales, p12m_vol, pm_numreviews, pm_avgrating, p3m_numreviews, p3m_avgrating, p12m_numreviews, 
-            p12m_avgrating, pm_avgsntp, p3m_avgsntp, p12m_avgsntp ) :-
-        mlfeatures ( nodeId, yr, mn, sales, vol, pm_sales, pm_vol, p3m_sales, p3m_vol, p12m_sales, 
-            p12m_vol, pm_numreviews, pm_avgrating, p3m_numreviews, p3m_avgrating, p12m_numreviews, 
-            p12m_avgrating, pm_avgsntp, p3m_avgsntp, p12m_avgsntp ) , 
-        nodeId in (15, 45, 121), 
-        mn=12, 
-        yr=2015.'''
-)
-
-# analytic query -> get top 3 categories (in terms of sales) around Christmas
-# NOTE:  uses salesagg, not monthlysalesagg (so harder query to process), see query_1a below for alternate version
-analytic_query_1 = (
-'''Step1 ( nodeId, agg_sales) :- 
-        group_by(salesagg (nodeId, _, mn, sales, _, _) , [nodeId], agg_sales=sum(sales)),
-        mn=12.
-   Step2 (nodeID, agg_sales) :- 
-        order_by(Step1(nodeId, agg_sales), [agg_sales], [d]).
-   Ans ( nodeId, agg_sales ) :-
-        top(3, Step2 (nodeId, agg_sales)).'''
-)
-
-# same query as above but using monthlysalesagg
-analytic_query_1a = (
-'''Step1 (nodeId, sales) :-
-        order_by( monthlysalesagg (nodeId, mn, sales, _, _), [sales], [d]),
-        mn=12.
-   Ans (nodeId, sales) :- 
-        top(3, Step1(nodeId, sales)).'''
-)
-
-# analytic query -> get top 3 categories (in terms of volume) around Christmas
-# NOTE:  uses salesagg, not monthlysalesagg (so harder query to process)
-analytic_query_2 = (
-'''Step1 ( nodeId, agg_vol) :- 
-        group_by(salesagg (nodeId, _, mn, _, vol, _) , [nodeId], agg_vol=sum(vol)),
-        mn=12.
-   Step2 (nodeID, agg_vol) :- 
-        order_by(Step1(nodeId, agg_vol), [agg_vol], [d]).
-   Ans ( nodeId, agg_vol ) :-
-        top(3, Step2 (nodeId, agg_vol)).'''
-)
-
-# analytic query -> get top 3 categories (in terms of sales) last year
-# NOTE:  uses salesagg, not annualsalesagg (so harder query to process), see query_3a for alternative version
-analytic_query_3 = (
-'''Step1 (nodeId, agg_sales) :-
-        group_by(salesagg (nodeId, yr, _, sales, _, _), [nodeId], agg_sales=sum(sales)).
-   Step2 (nodeId, agg_sales) :-
-        order_by(Step1(nodeId, agg_sales), [agg_sales], [d]).
-   Ans (nodeId, agg_sales) :-
-        top(3, Step2 (nodeId, agg_sales)).'''
-)
-
-# same query as above but using annualsalesagg
-analytic_query_3a = (
-'''Step1 (nodeId, sales):-
-        order_by(annualsalesagg(nodeId, yr, sales, _, _), [sales], [d]).
-   Ans (nodeId, sales) :-
-       top(3, Step1(nodeId, sales)).
-'''
-)
-
-queries = [ml_train_query,
-           ml_predict_query,
-           analytic_query_1,
-           analytic_query_1a,
-           analytic_query_2,
-           analytic_query_3,
-           analytic_query_3a]
-
-
-# #### Global Variables
-
-# In[3]:
-
 # variables
 groupby_regex = 'group_?by\(.*?\){2}' # assumes 2 ending close parens
 orderby_regex = 'order_?by\(.*?\]\)'
 topn_regex = 'top\(.*?\){2}'
-additional_heads_regex = '[\.]+(.*?):-'
+#additional_heads_regex = '[\.]+(.*?):-'
+additional_heads_regex = '\.([^\.]*?):-'
 valid_qualifiers = '<|>|<=|>=|=|!=|is|is\snot'
 ##operator  = ',|;'
 
-
-# #### Parsing Functions
-
-# In[4]:
+# Parsing Functions
 
 def cleanDatalog(datalog):
     '''removes whitespace, leading and trailing commas, replaces multiple consecutive 
@@ -152,23 +52,15 @@ def cleanDatalog(datalog):
     datalog = datalog.rstrip('.')
     datalog = re.sub(',+',',', datalog)
     datalog = re.sub('\'','"', datalog)
+    datalog = datalog#.lower()
+    
     return datalog
-
-#cleanDatalog(ml_predict_query)
-
-
-# In[5]:
 
 def getRegex(s):
     '''converts string with parens to regex compatible string'''
     s = re.sub('\(','\(', s)
     s = re.sub('\)','\)', s)
     return s
-
-#getRegex('ans(x,y,z)')
-
-
-# In[6]:
 
 def getHeads(datalog):
     '''function to extract individual heads of datalog queries, used for splitting in getDatalogSteps function'''
@@ -185,17 +77,12 @@ def getHeads(datalog):
 
     return heads
 
-# test
-#getHeads(analytic_query_1)
-
-
-# In[7]:
-
 def getDatalogSteps(datalog):
     '''creates a list of individual datalog queries if multiple heads'''
     d = cleanDatalog(datalog)
     datalog_list = []
     heads = getHeads(d)
+    
     for idx,h in enumerate(heads):
         # re-append ':-' so as not to split order_by and group_by
         h = h+':-'
@@ -214,22 +101,10 @@ def getDatalogSteps(datalog):
 
     return datalog_list
 
-# test
-#getDatalogSteps(analytic_query_1)
-
-
-# In[8]:
-
 def getHead(datalog):
     '''returns datalog head of single query'''
     d = cleanDatalog(datalog)
     return ''.join(re.split(':-', d)[0].split())
-
-# test
-#getHead(analytic_query_1)
-
-
-# In[9]:
 
 def getBody(datalog):
     '''function to get body of single datalog query; excludes groupbys, orderbys, topn
@@ -250,14 +125,6 @@ def getBody(datalog):
     body = [''.join(b.split()) for b in body]
     
     return body
-
-# test
-#dl = ml_predict_query
-#print dl
-#getBody(dl)
-
-
-# In[10]:
 
 def getConds(datalog):
     '''function to get conditions for single datalog query'''
@@ -293,27 +160,11 @@ def getConds(datalog):
     
     return conds
 
-# test
-#dl = ml_predict_query
-#print dl
-#getConds(dl)
-
-
-# In[11]:
-
 def getOrderBy(datalog):
     '''gets order_by conditions'''
     d = cleanDatalog(datalog)
     ob = re.findall(orderby_regex, d)
     return ob
-
-# test
-#dl = getDatalogSteps(analytic_query_1)[1]
-#print dl
-#getOrderBy(dl)
-
-
-# In[12]:
 
 def getOrderByParts(datalog):
     '''creates dictionary of order_by query, order_by variables, and order_by criteria for single order_by statement'''
@@ -325,63 +176,43 @@ def getOrderByParts(datalog):
 
     return {'query':query[0], 'vars':ob_vars[0], 'criteria':ob_criteria[0]}
 
-
-            
-# test
-#dl = getDatalogSteps(analytic_query_1)[1]
-
-#dl = getDatalogSteps(analytic_query_1)[1]
-#print dl,'\n'
-#ob = getOrderBy(dl)[0]
-#print ob
-#getOrderByParts(ob)
-
-
-# In[13]:
-
 def getGroupBy(datalog):
     '''extracts list of group_by statements from single datalog query'''
     d = cleanDatalog(datalog)
     gb = re.findall(groupby_regex, d)
     return gb
 
-# test
-#dl = ml_predict_query #getDatalogSteps(analytic_query_1)[0]
-#print dl
-#getGroupBy(dl)
-
-
-# In[14]:
-
 def parseGroupBy(gb):
     '''creates dictionary of group_by subgoal, aggregate expression, and aggregate vars for single group_by statement'''
-    gb = cleanDatalog(gb)
-    by = None
-    query = None
-    alias = None
-    function = None
-    on = None
-    aggvars = re.findall('\[(.*?)\]', gb)
-    if aggvars:
-        by = aggvars[0].split(',')
-    subgoal = re.findall('(?<=group_by\()[^\)]+\)', gb)
-    if subgoal:
-        query = parsePredicateAtoms(subgoal[0])
-    aggexp =  re.findall('(?<=\],).+(?=\))', gb)
-    if aggexp:
-        maggexp = re.findall('(\w+)=(\w+)\((\w+)\)',aggexp[0])
-        if maggexp:
-            maggexp = maggexp[0]
-            alias =  maggexp[0]
-            function = maggexp[1]
-            on = maggexp[2]
+    try:
+        gb = cleanDatalog(gb)
+        by = None
+        query = None
+        alias = None
+        function = None
+        on = None
+        aggvars = re.findall('\[(.*?)\]', gb)
+        if aggvars:
+            by = aggvars[0].split(',')
+        subgoal = re.findall('(?<=group_by\()[^\)]+\)', gb)
+        if subgoal:
+            query = parsePredicateAtoms(subgoal[0])
+        aggexp =  re.findall('(?<=\],).+(?=\))', gb)
+        if aggexp:
+            maggexp = re.findall('(\w+)=(\w+)\((\w+)\)',aggexp[0])
+            if maggexp:
+                maggexp = maggexp[0]
+                alias =  maggexp[0]
+                function = maggexp[1]
+                on = maggexp[2]
+    except:
+        raise Exception ("Error parsing group_by %s" % (gb))
     
     return {'predicate':query,
             'alias':alias,
             'function':function,
             'on':on,
             'by':by}
-
 
 def getGroupByParts(gb):
     '''creates dictionary of group_by subgoal, aggregate expression, and aggregate vars for single group_by statement'''
@@ -393,15 +224,6 @@ def getGroupByParts(gb):
     return {'agg_vars': aggvars[0],
             'subgoal': subgoal[0],
             'agg_exp': aggexp[0]}
-# test
-#dl = getDatalogSteps(analytic_query_1)[0]
-#print dl,'\n'
-#print getGroupBy(dl)[0]
-
-#getGroupByParts(getGroupBy(dl)[0])
-
-
-# In[15]:
 
 def rebuildGroupBy(gbParts):
     '''rebuilds group_by statement from groupby subgoal, aggregate variables, and aggregate expression'''
@@ -412,32 +234,11 @@ def rebuildGroupBy(gbParts):
     gb_str = 'group_by({0},{1},{2})'.format(subgoal, agg_vars, agg_exp)
     return gb_str
 
-# test
-#dl = getDatalogSteps(analytic_query_1)[0]
-#print 'datalog =',dl,'\n'
-#g = getGroupBy(dl)[0]
-#print 'group_by =',g,'\n'
-#gbp = getGroupByParts(g)
-#print 'group_by parts =',gbp,'\n'
-
-#print rebuildGroupBy(gbp)
-
-
-# In[16]:
-
 def getTopN(datalog):
     '''extracts list of topN statements from single datalog query'''
     d = cleanDatalog(datalog)
     topn = re.findall(topn_regex, d)
     return topn
-
-# test
-#dl = getDatalogSteps(analytic_query_1)[2]
-#print dl
-#getTopN(dl)
-
-
-# In[17]:
 
 def getTopNparts(topn):
     '''creates dictionary of topN n and query from single topN clause'''
@@ -449,15 +250,9 @@ def parseTopNparts(topn):
     '''creates dictionary of topN n and query from single topN clause'''
     n = re.findall('(?<=top\()[0-9]+', topn)
     query = re.findall('(?<=[0-9],).+(?=\))', topn)
-    return {'n':int(n[0]),'query':parsePredicateAtoms(query[0])}
+    results = {'n':int(n[0]),'query':parsePredicateAtoms(query[0])}
 
-# test
-#dl = getDatalogSteps(analytic_query_1)[2]
-#print dl
-#getTopNparts(getTopN(dl)[0])
-
-
-# In[18]:
+    return results
 
 def rebuildTopN(topNparts):
     '''rebuilds topN statement from n and query'''
@@ -465,14 +260,6 @@ def rebuildTopN(topNparts):
     query = topNparts['query']
     topn_str = 'top({0},{1})'.format(n, query)
     return topn_str
-
-# test
-#dl = getDatalogSteps(analytic_query_1)[2]
-#print dl
-#rebuildTopN(getTopNparts(getTopN(dl)[0]))
-
-
-# In[19]:
 
 def getDatalogParts(datalog):
     '''function to decompose datalog query into constituent parts - head, body, group_by, order_by, top_n, conditions'''
@@ -483,9 +270,6 @@ def getDatalogParts(datalog):
     topn_clause = getTopN(datalog)
     head = getHead(datalog)
 
-    #print body
-    #print type(body)
-    # does the item below need to be an array/list
     parsed_predicates = None
     if body:
         parsed_predicates = [parsePredicateAtoms(pred) for pred in body]
@@ -518,17 +302,6 @@ def getDatalogParts(datalog):
             'conditions.parsed': parsed_conditions
            }
 
-# test
-#dl = ml_predict_query
-#print "---------------------"
-#print dl
-#getDatalogParts(dl)
-#print "---------------------"
-
-
-
-# In[20]:
-
 def buildDatalogString(datalogParts):
     '''rebuilds datalog string from datalog parts'''
     dh = datalogParts['head']
@@ -539,75 +312,78 @@ def buildDatalogString(datalogParts):
     dt = ','.join(t for t in datalogParts['topn'])
     
     # rebuild string
-    datalog_str = dh+':-'+cleanDatalog(','.join([db,dg,dc,do,dt]))
-    
-    # remove leading and trailing and multiple commas
-    #datalog_str = cleanDatalog(datalog_str)
+    datalog_str = dh+':-'+cleanDatalog(','.join([db,dg,do,dt,dc]))
     
     # replace "attribute%in%(a,b,c)" with "attribute in (a,b,c)"
     datalog_str = re.sub('%in%', ' in ', datalog_str)
     
     return datalog_str
 
-# test
-#dl = analytic_query_1a
-#print dl
-#buildDatalogString(getDatalogParts(dl))
-
-
-# In[22]:
-####
-####
-#### Start of Nolan's Junk
-####
-####
 def parseOrderBy(datalog):
     '''creates dictionary of order_by query, order_by variables, and order_by criteria for single order_by statement'''
-    ob = cleanDatalog(datalog)
-    
-    query = re.findall('(?<=by\()[^\)]+\)', ob)
-    ob_vars = re.findall(',\[(.*?)\],', ob)
-    ob_criteria = re.findall('\],\[(.*?)\]\)', ob)
-    by = []
-    c = 0
-    if ob_criteria:
-        ordering = ob_criteria[0].split(',')
-        c = len(ordering)
-    
-    for i,v in enumerate(ob_vars[0].split(',')):
-        a = [v,'a']
-        if i < c:
-            a[1] = ordering[i]
-        by.append(a)
-    
-    predicate = parsePredicateAtoms( query[0] )
-        
-    return {'predicate':predicate['predicate'],
+
+    results = None
+    try:
+        ob = cleanDatalog(datalog)
+
+        query = re.findall('(?<=by\()[^\)]+\)', ob)
+        ob_vars = re.findall(',\[(.*?)\],', ob)
+        ob_criteria = re.findall('\],\[(.*?)\]\)', ob)
+        by = []
+        c = 0
+        if ob_criteria:
+            ordering = ob_criteria[0].split(',')
+            c = len(ordering)
+
+        for i,v in enumerate(ob_vars[0].split(',')):
+            a = [v,'a']
+            if i < c:
+                a[1] = ordering[i]
+            by.append(a)
+
+        predicate = parsePredicateAtoms( query[0] )
+        results = {'predicate':predicate['predicate'],
             'atoms':predicate['atoms'],
             'by':by}
+    except:
+        raise Exception( "Error parsing order by %s" % (datalog))
+        
+    return results
 
 def parsePredicateAtoms(datalog):
-    m = re.findall('(\w+)\(([\w,]+)\)', datalog)
-    #print m
-    if m:
-        predicate = m[0][0]
-        atoms = m[0][1].split(',')  
-    return {'predicate':predicate,'atoms':list(atoms)}
+    results = None
+    source = None
+    try:
+        m = re.findall('(\w+)\.(\w+)\(', datalog)
+        if m:
+            source=m[0][0]                       
+        m = re.findall('(\w+)\(([\w,]+)\)', datalog)
+        if m:
+            predicate = m[0][0]
+            atoms = m[0][1].split(',')
+        results = {'predicate':predicate,'atoms':list(atoms)}
+        if source:
+            results['source'] = source
+    except:
+        raise Exception( "Error parsing predication %s" % (datalog))
+    return results
 
 def parseCondition(condition):
 
-    expressions = ['(\w+)(%s)(\w+)' % (valid_qualifiers),'(\w+)[%|\s](in)[%|\s]\((.*)\)']
-    for pattern in expressions:
-        m = re.findall(pattern, condition)
-        parsed = None
-        if m:
-            m = list(m[0])
-            if m and len(m) == 3:
-                # created with "condition" to distinquish from AND, OR, IN, NOT IS, IS NULL... operators
-                parsed = {'condition': {'lhs':m[0],'qualifier':m[1],'rhs':m[2]}}
-                break
-
-    #print parsed
+    parsed = None
+    try:
+        expressions = ['(\w+)(%s)(\w+)' % (valid_qualifiers),'(\w+)[%|\s](in)[%|\s]\((.*)\)']
+        for pattern in expressions:
+            m = re.findall(pattern, condition)
+            parsed = None
+            if m:
+                m = list(m[0])
+                if m and len(m) == 3:
+                    # created with "condition" to distinquish from AND, OR, IN, NOT IS, IS NULL... operators
+                    parsed = {'condition': {'lhs':m[0],'qualifier':m[1],'rhs':m[2]}}
+                    break
+    except:
+        raise Exception( "Error parsing condition %s" % (condition))
     return parsed
 
 def parseHead(head):
@@ -616,13 +392,6 @@ def parseHead(head):
 def parseConditionClause(conditions):
     conditions = [parseCondition(cond) for cond in conditions]
     return conditions
-
-####
-####
-#### End of Nolan's Junk
-####
-####            
-            
 
 def processDatalog(datalog):
     '''function that takes datalog string and returns string, individual steps, and parts'''
@@ -637,20 +406,3 @@ def processDatalog(datalog):
     datalog_info['single_strings'] = steps
     datalog_info['single_parts'] = parts
     return datalog_info
-
-# test
-#dl = ml_predict_query
-#print dl
-#processDatalog(dl)
-
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-
-

@@ -23,6 +23,104 @@
           "level4",
           "level5"
         ],
+        "source": "S2"
+      }
+    ]
+  },
+  "sales_agg_mn": {
+    "datalog": [
+      "nodeid",
+      "mn",
+      "sales",
+      "vol",
+      "avgprice",
+      "rank_sales",
+      "rank_vol"
+    ],
+    "mapping": [
+      {
+        "table": "sales_agg_mn",
+        "source.datalog": [
+          "nodeid",
+          "mn",
+          "sales",
+          "vol",
+          "avgprice",
+          "rank_sales",
+          "rank_vol"
+        ],
+        "source": "S1"
+      }
+    ]
+  },
+  "sales_agg_yr": {
+    "datalog": [
+      "nodeid",
+      "yr",
+      "sales",
+      "vol",
+      "avgprice",
+      "rank_sales",
+      "rank_vol"
+    ],
+    "mapping": [
+      {
+        "table": "sales_agg_yr",
+        "source.datalog": [
+          "nodeid",
+          "yr",
+          "sales",
+          "vol",
+          "avgprice",
+          "rank_sales",
+          "rank_vol"
+        ],
+        "source": "S1"
+      }
+    ]
+  },
+  "sales_agg_yrmn": {
+    "datalog": [
+      "nodeid",
+      "yr",
+	  "mn",
+      "sales",
+      "vol",
+      "avgprice"
+    ],
+    "mapping": [
+      {
+        "table": "sales_agg_yrmn",
+        "source.datalog": [
+          "nodeid",
+          "yr",
+		  "mn",
+          "sales",
+          "vol",
+          "avgprice"
+        ],
+        "source": "S1"
+      }
+    ]
+  },
+  "reviews_agg_yrmn": {
+    "datalog": [
+      "nodeid",
+      "yr",
+      "mn",
+      "numreviews",
+      "avgrating"
+    ],
+    "mapping": [
+      {
+        "table": "reviews_agg_yrmn",
+        "source.datalog": [
+          "nodeid",
+          "yr",
+          "mn",
+          "numreviews",
+          "avgrating"
+        ],
         "source": "S1"
       }
     ]
@@ -31,86 +129,63 @@
     "datalog": [
       "nodeid",
       "yr",
-      "mon",
-      "total_sales_volume",
-      "total_sales_price",
-      "pm_total_sales_volume",
-      "pm_total_sales_price",
-      "avgsntp"
+      "mn",
+      "sales",
+      "vol",
+      "pm_sales",
+      "pm_vol",
+      "p3m_sales",
+      "p3m_vol",
+      "p12m_sales",
+      "p12m_vol",
+      "pm_numreviews",
+      "pm_avgrating",
+      "p3m_numreviews",
+      "p3m_avgrating",
+      "p12m_numreviews",
+      "p12m_avgrating",
+      "pm_avgsntp",
+      "p3m_avgsntp",
+      "p12m_avgsntp"
     ],
     "mapping": [
       {
-        "table": "mlfeatures",
+        "table": "mv_ml_features",
         "source.datalog": [
           "nodeid",
           "yr",
-          "mon",
-          "total_sales_volume",
-          "total_sales_price",
-          "pm_total_sales_volume",
-          "pm_total_sales_price"
-        ],
+          "mn",
+          "sales",
+          "vol",
+          "pm_sales",
+          "pm_vol",
+          "p3m_sales",
+          "p3m_vol",
+          "p12m_sales",
+          "p12m_vol",
+          "pm_numreviews",
+          "pm_avgrating",
+          "p3m_numreviews",
+          "p3m_avgrating",
+          "p12m_numreviews",
+          "p12m_avgrating"
+          ],
         "key": "nodeid",
         "source": "S1"
       },
       {
-        "__comment__": "not sure about this part and use of nodeid...",
-        "table": "sentiment",
+        "table": "mlview",
         "source.datalog": [
-          "yr",
-          "mon",
           "nodeid",
-          "avgsntp"
+          "yr",
+          "mn",
+          "pm_avgsntp",
+          "p3m_avgsntp",
+          "p12m_avgsntp"
         ],
         "key": "nodeid",
         "source": "S2"
       }
     ]
-  },
-  "S2.ClassificationInfo": {
-    "table": "ClassificationInfo",
-    "datalogmap": [
-      "nodeid",
-      "classification",
-      "level0",
-      "level1",
-      "level2",
-      "level3",
-      "level4",
-      "level5"
-    ],
-    "columns": [
-      "nodeID",
-      "classification",
-      "category.level_0",
-      "category.nested.level_1",
-      "category.nested.nested.level_2",
-      "category.nested.nested.nested.level_3",
-      "category.nested.nested.nested.nested.level_4",
-      "category.nested.nested.nested.nested.nested.level_5"
-    ],
-    "keys": [
-      "nodeid",
-      "nodeID"
-    ],
-    "wrapper": "asterixWrapper"
-  },
-  "S2.sentiment": {
-    "table": "reviews",
-    "datalogmap": [
-      "nodeid",
-      "yr",
-      "mon",
-      "avgsntp"
-    ],
-    "columns": [
-      "asin",
-      "get_year(parse_date(r.reviewTime,\"M D, Y\")) as year",
-      "get_month(parse_date(r.reviewTime,\"M D, Y\")) as mon",
-      "get_day(parse_date(r.reviewTime,\"M D, Y\")) as day",
-      "parse_date(r.reviewTime,\"M D, Y\") as reviewTime"
-    ],
-    "function": "sentiment",
-    "wrapper": "asterixWrapper"
   }
 }
